@@ -1,0 +1,80 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[sp_Report_GAP028_ReceivesSale]
+
+	@date_from		DATETIME		= '1/1/2015'
+   ,@date_to		DATETIME		= '1/1/2020'
+   ,@branch_id		NVARCHAR(2000)	= ''
+   ,@user_name		NVARCHAR(2000)	= 'j'	
+   ,@PeriodNo		NVARCHAR(2000)	= ''
+AS
+BEGIN
+	
+
+	SELECT ROW_NUMBER() OVER (ORDER BY brn ASC)			AS RowNumber
+	      ,ROW_NUMBER() OVER (PARTITION BY HCTH.brn ORDER BY HCTH.brn DESC)	AS RowGroupBrn
+		  ,HCTH.brn										AS brn							-- สาขา id
+		  ,HBRA.bnname									AS bnname						-- สาขา name
+		  ,HCTH.contno									AS contno						-- สัญญาเลขที่
+		  ,CONVERT(DATE,HCTH.codate)					AS codate						-- วันทีทำสัญญา
+		  ,HCTH.title									AS title						
+		  ,HCTH.titleother								AS titleother	
+		  ,HCTH.name									AS name
+		  ,HCTH.sirname									AS sirname
+		  ,ISNULL(HCTH.titleother,HCTH.title)+' '+ISNULL(HCTH.name,'') + N' '+ ISNULL(HCTH.sirname,'') AS full_name	-- ชื่อนามสกุล
+		  ,HCTH.salestype								AS salestype					-- ประเภทการขาย
+		  ,HCTH.coltyp									AS coltyp						-- ประเภทหลักทรัพย์
+		  ,ISNULL(HCTH.reservation,0) + ISNULL(HCTH.dpnetprice,0) AS dpnetprice
+		  ,HCTH.lnpriamt								AS lnpriamt						-- วงเงินเช่าซื้อ
+		  ,HCTH.flatrate								AS flatrate						-- อัตราดอกเบี้ย
+		  ,HCTH.noinst									AS noinst						-- งวด
+		  ,HCTH.instamt									AS instamt						-- ค่างวด
+		  ,HCTH.octtype									AS octtype						-- ไว้เช็คข้อมูลต้องเอาแต่ที่ octtype = N'จ่ายเมื่อเปิด'
+		  ,CASE WHEN HCTH.octtype = N'จ่ายเมื่อเปิด'
+				THEN HCTH.cctfee
+				ELSE 0	END								AS cctfee						-- ธ.จัดทำสัญญา(เปิด) 
+		  ,CASE WHEN HCTH.octtype = N'จ่ายเมื่อเปิด'					
+				THEN HCTH.servicefr 
+				ELSE 0	END								AS servicefr					-- บ.จัดการสัญญา(เปิด)
+		  ,HCTH.cinfee									AS cinfee						-- บ.ตรวจสอบข้อมูลลูกค้า 
+		  ,HCTH.transferFee								AS transferFee					-- บ.โอนเข้า
+		  ,0											AS transfer_floating			-- บ.ตรวจสภาพโอนลอย (รอ field)
+		  ,HCTH.ovrfee									AS ovrfee						-- บ.เกินเรท
+		  ,ISNULL(HEMP_Analyst.titleother,HEMP_Analyst.title)+' '+ISNULL(HEMP_Analyst.firstname,'') + N' '+ ISNULL(HEMP_Analyst.lastname,'') AS full_name_analyst	-- จนท.วิเคราะห์ 															-- จนท.วิเคราะห์
+		  ,ISNULL(HEMP_Approve.titleother,HEMP_Approve.title)+' '+ISNULL(HEMP_Approve.firstname,'') + N' '+ ISNULL(HEMP_Approve.lastname,'') AS full_name_approve	-- คนอนุมัติ
+		  ,CONCAT(N'เลขที่ ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.hseno1)), '-'),'-') , N' หมู่ที่ ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.moono1)), '-'),'-') , N' ซอย ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.soi1)), '-'),'-') 
+		        , N' ถนน ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.tanon1)), '-'),'-') , N' ตำบล ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.tambon1)), '-'),'-') , N' อำเภอ ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.amphor1)), '-'),'-') 
+				, N' จังหวัด ' , ISNULL(ISNULL(LTRIM(RTRIM(HCTH.province1)), '-'),'-')
+				, ' ' , ISNULL(LTRIM(RTRIM(HCTH.postcode1)), '-'))					AS detail_address				-- ที่อยู่
+		  ,HCTH.tel + HCTH.tel_extend					AS tel							-- โทรศัพท์
+		  ,PaymentHeader_PV.PaymentId					AS payment_id					-- ใบสำคัญจ่าย
+		  ,PaymentHeader_CT.ReceiptId					AS receipt_id					-- ใบรับเงิน
+		  ,(SELECT supporter_1 FROM [FN_SuportUserName] (HCTG.contractid,HCTH.id))	AS supporter_1	-- ผู้ค้ำคนที่1
+		  ,(SELECT supporter_2 FROM [FN_SuportUserName] (HCTG.contractid,HCTH.id))	AS supporter_2	-- ผู้ค้ำคนที่2
+		  ,@date_from									AS input_datefrom
+		  ,@date_to										AS input_dateto
+		  ,ISNULL(format(PaymentDetail.SendLMIS,'ddHHmm'),N'รอฝาก') AS PeriodNo
+	FROM [dbo].[HCTH]		AS HCTH 
+	LEFT JOIN [dbo].[HCTG]  AS HCTG ON HCTH.id = HCTG.contractid /* เพื่อหาผู้ค้ำคนที่1, ผู้ค้ำคนที่2 */
+	LEFT JOIN [dbo].[HBRA]	AS HBRA ON HCTH.brn = HBRA.bncode2 /* เพื่อหาสาขา */
+	LEFT JOIN [dbo].[HEMP]  AS HEMP_Analyst ON HCTH.empcode = HEMP_Analyst.UserName /* เพื่อหา จนท.วิเคราะห์ */
+	LEFT JOIN [dbo].[HEMP]  AS HEMP_Approve ON HCTH.apvcode = HEMP_Approve.UserName /* เพื่อหา คนอนุมัตื */
+	LEFT JOIN [dbo].[PaymentHeader] AS [PaymentHeader_PV] ON HCTH.id = [PaymentHeader_PV].ContractId AND [PaymentHeader_PV].[Type] = 'PV' /* เพื่อหาใบสำคัญจ่าย */
+	LEFT JOIN [dbo].[PaymentHeader] AS [PaymentHeader_CT] ON HCTH.id = [PaymentHeader_CT].ContractId AND [PaymentHeader_CT].[Type] = 'CT' /* เพื่อหาใบรับเงิน */
+	LEFT JOIN (SELECT DISTINCT PaymentId, SendLMIS FROM PaymentDetail) PaymentDetail ON PaymentDetail.PaymentId = [PaymentHeader_CT].PaymentId
+
+	WHERE HCTH.codate IS NOT NULL
+	AND   CONVERT(DATE,HCTH.codate) BETWEEN @date_from AND @date_to
+	AND HCTH.status NOT LIKE N'%ยกเลิก%'
+	--AND	 ((ISNULL(@branch_id, '') = '' AND HCTH.brn IN (SELECT BranchCode FROM dbo.fn_GetBrachListFromUser(@user_name))) /* user ที่เห็นข้อมูลจะต้องเห็นตามสาขาที่เค้ามีสิทธ์ */
+	--				OR HCTH.brn IN (SELECT Data FROM FN_SplitData(@branch_id, ';')))
+
+		AND	 ((ISNULL(@branch_id, '') = '' ) /* user ที่เห็นข้อมูลจะต้องเห็นตามสาขาที่เค้ามีสิทธ์ */
+					OR HCTH.brn IN (SELECT Data FROM FN_SplitData(@branch_id, ';')))
+		AND	 ((ISNULL(@PeriodNo, '') = '' ) OR ISNULL(format(PaymentDetail.SendLMIS,'ddHHmm'),N'รอฝาก') IN (SELECT Data FROM FN_SplitData(@PeriodNo, ';')))
+
+	
+END
+GO
